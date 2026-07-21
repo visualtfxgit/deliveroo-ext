@@ -408,6 +408,15 @@ function genIdentity() {
 
 const EXT_VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return ""; } })();
 
+// When the server tells us the account isn't paid (or the link is gone), reflect it locally right
+// away so the banner/popup flip to "no subscription" without waiting for a dashboard revisit. The
+// server stays the authoritative gate — this is only UI freshness.
+function noteAccess(reason) {
+  if (reason === "not_subscribed" || reason === "unlinked") {
+    try { chrome.storage.local.set({ extPaid: false }); } catch (e) {}
+  }
+}
+
 // Call the proxy server's licence-gated helper endpoints (/otp/*, /email/claim) with our website
 // link token so the server can resolve the account, confirm it's paid, and use the user's OWN
 // dashboard SMSPool key. Falls back to the next base only when a base is unreachable.
@@ -423,7 +432,7 @@ async function extApi(path, body) {
         body: JSON.stringify(payload),
       });
       const d = await res.json().catch(() => null);
-      if (d) return d;              // server answered (incl. {reason} on 403) — authoritative
+      if (d) { noteAccess(d.reason || d.error); return d; } // server answered — authoritative
       lastErr = "http_" + res.status;
     } catch (e) { lastErr = String((e && e.message) || e); }
   }
@@ -509,7 +518,7 @@ async function proxyRequest(reqObj) {
       });
       const data = await res.json().catch(() => null);
       if (!data) { lastErr = "proxy_http_" + res.status; continue; } // bad/empty body → try the next base
-      if (data.error) return { error: data.error };                 // server spoke — authoritative, don't fall back
+      if (data.error) { noteAccess(data.error); return { error: data.error }; } // server spoke — authoritative
       await rooApplySetCookies(data.setCookies, reqObj.url);
       return { status: data.status, statusText: data.statusText, headers: data.headers, bodyB64: data.bodyB64 };
     } catch (e) { lastErr = String((e && e.message) || e); }         // couldn't reach this base → try the next
