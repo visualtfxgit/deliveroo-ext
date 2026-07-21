@@ -1,6 +1,13 @@
 # Local dev notes with captured account credentials / session tokens — NEVER publish
 solution.txt
 
+# Obfuscation toolchain + CLEAN SOURCE — kept local only. The repo ships ONLY the obfuscated
+# root JS (background/content/popup/sitelink.js). Edit src/*.js, then `npm run build` to regenerate.
+src/
+build.mjs
+package.json
+package-lock.json
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
