@@ -1,0 +1,8 @@
+# Local dev notes with captured account credentials / session tokens — NEVER publish
+solution.txt
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
+node_modules/
