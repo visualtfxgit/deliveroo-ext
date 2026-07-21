@@ -4,10 +4,6 @@
 //
 // Header spoofing on api.uk.deliveroo.com is declarative (rules.json).
 
-// Shared device-identity + request-signing module (L1). MUST load first (synchronous) so
-// NexaCrypto exists before any key-API call signs a request.
-try { importScripts("crypto.js"); } catch (e) { /* crypto.js absent → signing degrades to off */ }
-
 // Gate: the extension is inert until it's linked to a NexaServe account (a website
 // extension-link token). Paid enforcement is authoritative on the proxy server (every
 // /proxy + /otp call is gated on the account being a paid subscriber); locally we treat
@@ -32,20 +28,11 @@ const BLOCK_RESOURCE_TYPES = [
   "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other",
 ];
 
-// ── Deliveroo / SMSPool constants (mirrored from bot.py) ─────────────────────
-const ROO_BASE = "https://co-m.uk.deliveroo.com";
-const ROO_AUTH = ROO_BASE + "/orderapp/v1";
-const IOS_UA = "Deliveroo-OrderApp/3.308.2 (iPhone10,5; iOS16.7.12; Release; en_GB; 103039)";
-const SMSPOOL = "https://api.smspool.net";
-const SMSPOOL_SERVICE_ID = "258";
-const SMSPOOL_COUNTRY = "1";
-const UA_RULE_ID = 90001;
-
-// ── Residential-proxy forwarder (account-creation calls only) ────────────────
-// The auto-create Deliveroo API calls (co-m / api.uk) are POSTed to our licence-gated forwarder,
-// which replays them out through a residential GB IP and returns the response. The proxy
-// credentials live ONLY on that server (env var), never here — so this repo can be public. The
-// licence server, SMSPool, and the deliveroo.co.uk web login all stay DIRECT (real IP).
+// ── Account-creation service (server-side) ───────────────────────────────────
+// The whole Deliveroo signup — rent number, verify SMS, register, apply voucher — runs on our
+// licence-gated proxy server (POST /create, streamed back as SSE), through a residential GB IP.
+// None of that methodology, nor any credentials, lives in this (public) extension. The only
+// account step that stays here is the final web-login, which must run in the user's own browser.
 const PROXY_SERVERS = [
   "https://roo-proxy.nexaserve.uk",                     // primary — custom domain
   "https://roo-proxy-server-production.up.railway.app", // fallback — Railway default domain
@@ -243,25 +230,6 @@ chrome.runtime.onStartup.addListener(() => applyLicenseState());
 if (CAP.alarms) chrome.alarms.create("licenseCheck", { periodInMinutes: 2 });
 if (CAP.alarms) chrome.alarms.onAlarm.addListener((a) => { if (a.name === "licenseCheck") applyLicenseState(); });
 
-/* ─────────────── iOS User-Agent for our co-m background fetches ─────────────── */
-// fetch() can't set User-Agent, so a DNR rule stamps it on co-m requests.
-function enableIosUa() {
-  if (!CAP.dnrSession) return Promise.resolve(); // mobile: can't override UA; the API calls still go through on the host UA
-  return chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [UA_RULE_ID],
-    addRules: [{
-      id: UA_RULE_ID, priority: 1,
-      action: { type: "modifyHeaders", requestHeaders: [{ header: "User-Agent", operation: "set", value: IOS_UA }] },
-      condition: { requestDomains: ["co-m.uk.deliveroo.com"], resourceTypes: ["xmlhttprequest", "other", "ping", "csp_report"] },
-    }],
-  });
-}
-function disableIosUa() {
-  if (!CAP.dnrSession) return Promise.resolve();
-  return chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [UA_RULE_ID], addRules: [] });
-}
-
-
 /* ───────── persistent "logged-in" auth header (the new account's bearer) ───────── */
 // A DYNAMIC rule (survives restarts) that stamps `Authorization: Bearer <token>` on the
 // Deliveroo API hosts, so once an account is auto-created, refreshing deliveroo.co.uk
@@ -382,30 +350,6 @@ async function webApiLoginPage(tabId, email, password) {
   return cat;
 }
 
-/* ───────────────────────── identity helpers ───────────────────────── */
-
-function randStr(n, alphabet) {
-  const a = alphabet || "abcdefghijklmnopqrstuvwxyz0123456789";
-  const buf = crypto.getRandomValues(new Uint8Array(n));
-  let out = "";
-  for (let i = 0; i < n; i++) out += a[buf[i] % a.length];
-  return out;
-}
-const FIRST = ["Alex","Jordan","Casey","Riley","Morgan","Taylor","Avery","Quinn","Skyler","Cameron"];
-const LAST = ["Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Wilson","Taylor"];
-function pick(arr) { return arr[crypto.getRandomValues(new Uint32Array(1))[0] % arr.length]; }
-
-function genEmail() {
-  // random 12–14 lowercase alphanumeric local part on nexaserve.uk
-  const n = 12 + (crypto.getRandomValues(new Uint8Array(1))[0] % 3);
-  return randStr(n, "abcdefghijklmnopqrstuvwxyz0123456789") + "@nexaserve.uk";
-}
-function genIdentity() {
-  const first = pick(FIRST), last = pick(LAST);
-  const password = "Az9!" + randStr(10, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-  return { first, last, email: genEmail(), password };
-}
-
 const EXT_VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return ""; } })();
 
 // When the server tells us the account isn't paid (or the link is gone), reflect it locally right
@@ -417,234 +361,44 @@ function noteAccess(reason) {
   }
 }
 
-// Call the proxy server's licence-gated helper endpoints (/otp/*, /email/claim) with our website
-// link token so the server can resolve the account, confirm it's paid, and use the user's OWN
-// dashboard SMSPool key. Falls back to the next base only when a base is unreachable.
-async function extApi(path, body) {
+// Kick off a full server-side account creation and stream its SSE progress to the page overlay.
+// The whole Deliveroo signup runs on the proxy server (through the residential IP); we only relay
+// the step events to the UI and return the finished account. Returns null once an error was shown.
+async function createViaServer(tabId) {
   const st = await chrome.storage.local.get("extToken");
-  const payload = Object.assign({ token: (st && st.extToken) || "" }, body || {});
-  let lastErr = "unreachable";
+  const token = (st && st.extToken) || "";
+  let res = null, lastErr = "unreachable";
   for (const base of PROXY_SERVERS) {
     try {
-      const res = await fetch(base + path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const d = await res.json().catch(() => null);
-      if (d) { noteAccess(d.reason || d.error); return d; } // server answered — authoritative
-      lastErr = "http_" + res.status;
+      const r = await fetch(base + "/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) });
+      if (r && r.ok && r.body) { res = r; break; }
+      lastErr = "http_" + (r ? r.status : "0");
     } catch (e) { lastErr = String((e && e.message) || e); }
   }
-  return { error: lastErr };
-}
-
-// Reserve a fresh email with the server so it's never reused across users. Retries on conflict;
-// if the server is unreachable, falls back to the random email (a collision among random 12–14
-// char locals is astronomically unlikely).
-async function claimEmail() {
-  for (let i = 0; i < 6; i++) {
-    const email = genEmail();
-    const r = await extApi("/email/claim", { email });
-    if (r && r.ok) return email;                 // reserved
-    if (r && r.reason === "taken") continue;      // collision → try another
-    return email;                                 // any other error (incl. unreachable) → use it anyway
+  if (!res) {
+    chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "error", message: "Couldn't reach the creation service (" + lastErr + ")." }).catch(() => {});
+    return null;
   }
-  return genEmail();
-}
-
-// utf8-safe base64 helpers + a Headers-like getter (so extractToken's headers.get() works).
-function strToB64(s) { const u = new TextEncoder().encode(s); let b = ""; for (let i = 0; i < u.length; i++) b += String.fromCharCode(u[i]); return btoa(b); }
-function b64ToStr(b64) { if (!b64) return ""; const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new TextDecoder().decode(u); }
-function headersGetter(h) { h = h || {}; const low = {}; for (const k in h) low[String(k).toLowerCase()] = h[k]; return { get: (n) => { const v = low[String(n).toLowerCase()]; return v != null ? v : null; } }; }
-
-/* ───────── licence-gated residential-proxy forwarder ─────────
-   Ship a captured request to our server (PROXY_SERVERS), which replays it out through the
-   residential proxy and returns the response. We attach the Deliveroo cookies (chrome.cookies —
-   including httpOnly, which the server can't read) on the way out, and write any Set-Cookie the
-   server returns back into the browser jar, so the multi-step creation session (session → send
-   code → verify → register) carries its cookies across each step exactly like a real client. */
-async function rooBuildCookieHeader(url) {
-  try {
-    const cookies = await chrome.cookies.getAll({ url });
-    return (cookies || []).map((c) => c.name + "=" + c.value).join("; ");
-  } catch (e) { return ""; }
-}
-async function rooApplySetCookies(setCookies, url) {
-  if (!Array.isArray(setCookies) || !setCookies.length) return;
-  let origin; try { origin = new URL(url).origin; } catch (e) { return; }
-  for (const sc of setCookies) {
-    try {
-      const segs = String(sc).split(";");
-      const nv = segs.shift();
-      const eq = nv.indexOf("=");
-      if (eq < 0) continue;
-      const o = { url: origin, name: nv.slice(0, eq).trim(), value: nv.slice(eq + 1).trim() };
-      for (const a of segs) {
-        const i = a.indexOf("="); const k = (i < 0 ? a : a.slice(0, i)).trim().toLowerCase(); const v = i < 0 ? "" : a.slice(i + 1).trim();
-        if (k === "domain") o.domain = v;
-        else if (k === "path") o.path = v;
-        else if (k === "secure") o.secure = true;
-        else if (k === "httponly") o.httpOnly = true;
-        else if (k === "expires") { const t = Date.parse(v); if (!isNaN(t)) o.expirationDate = Math.floor(t / 1000); }
-        else if (k === "max-age") { const ma = parseInt(v, 10); if (!isNaN(ma)) o.expirationDate = Math.floor(Date.now() / 1000) + ma; }
-        else if (k === "samesite") { const s = v.toLowerCase(); o.sameSite = s === "none" ? "no_restriction" : (s === "lax" || s === "strict") ? s : undefined; }
-      }
-      await chrome.cookies.set(o).catch(() => {});
-    } catch (e) {}
-  }
-}
-// POST the request to the forwarder with the caller's website extension-link token, so the server
-// can gate it on the user's website subscription. Falls back to the next base only when a base is
-// unreachable — a server-returned error (not_subscribed / proxy_fetch_failed) is authoritative and
-// passed straight back.
-async function proxyRequest(reqObj) {
-  if (!reqObj || !reqObj.url) return { error: "bad_payload" };
-  const headers = Object.assign({}, reqObj.headers || {});
-  const cookie = await rooBuildCookieHeader(reqObj.url);
-  if (cookie) headers["Cookie"] = cookie;
-  const st = await chrome.storage.local.get("extToken");
-  const payload = {
-    token: (st && st.extToken) || "",
-    req: { url: reqObj.url, method: reqObj.method || "GET", headers, bodyB64: reqObj.bodyB64 || null },
-  };
-  let lastErr = "proxy_unreachable";
-  for (const base of PROXY_SERVERS) {
-    try {
-      const res = await fetch(base + "/proxy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => null);
-      if (!data) { lastErr = "proxy_http_" + res.status; continue; } // bad/empty body → try the next base
-      if (data.error) { noteAccess(data.error); return { error: data.error }; } // server spoke — authoritative
-      await rooApplySetCookies(data.setCookies, reqObj.url);
-      return { status: data.status, statusText: data.statusText, headers: data.headers, bodyB64: data.bodyB64 };
-    } catch (e) { lastErr = String((e && e.message) || e); }         // couldn't reach this base → try the next
-  }
-  return { error: lastErr };
-}
-
-function rooHeaders() {
-  const guid = crypto.randomUUID().toUpperCase();
-  return {
-    "Accept": "*/*",
-    "Accept-Language": "en-GB,en;q=0.9", // a real browser page-load adds this automatically; our background fetch needs it set explicitly
-    "Content-Type": "application/json",
-    "x-roo-app-version": "3.308.2",
-    "x-roo-country": "uk",
-    "x-roo-platform": "iOS",
-    "x-roo-rooblocks-version": "5.0.0",
-    "x-roo-guid": guid,
-    "x-roo-sticky-guid": guid,
-    "request-id": "req_" + randStr(27, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
-  };
-}
-
-// Account-creation co-m calls go SERVER-SIDE through the residential-proxy forwarder (the server
-// sets the iOS User-Agent — which fetch() can't — and carries the session cookies via the browser
-// jar). Auto-login (deliveroo.co.uk) stays browser-side, so the tab ends up logged in as before.
-async function rooPost(url, body) {
-  const headers = Object.assign({}, rooHeaders(), { "User-Agent": IOS_UA });
-  const r = await proxyRequest({ url, method: "POST", headers, bodyB64: strToB64(JSON.stringify(body)) });
-  if (r.error) return { ok: false, status: 0, data: null, text: String(r.error), headers: headersGetter({}) };
-  const text = b64ToStr(r.bodyB64);
-  let data = null; try { data = text ? JSON.parse(text) : null; } catch (_) {}
-  return { ok: r.status >= 200 && r.status < 300, status: r.status, data, text, headers: headersGetter(r.headers) };
-}
-
-function extractToken(data, headers) {
-  const KEYS = ["token", "access_token", "auth_token", "jwt", "session_token"];
-  if (data && typeof data === "object") {
-    for (const k of KEYS) if (typeof data[k] === "string" && data[k]) return data[k];
-    for (const c of ["session", "auth", "data"]) {
-      const n = data[c];
-      if (n && typeof n === "object") for (const k of KEYS) if (typeof n[k] === "string" && n[k]) return n[k];
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  const NL = String.fromCharCode(10);
+  let buf = "", account = null, errored = false;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf(NL + NL)) >= 0) {
+      const line = buf.slice(0, i).split(NL).find((l) => l.startsWith("data:"));
+      buf = buf.slice(i + 2);
+      if (!line) continue;
+      let evt; try { evt = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+      if (evt.kind === "step") sendStep(tabId, evt.key, evt.text, evt.state);
+      else if (evt.kind === "error") { errored = true; noteAccess(evt.reason); chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "error", title: evt.title, message: evt.message }).catch(() => {}); }
+      else if (evt.kind === "done") account = evt.account;
     }
   }
-  if (headers) {
-    const a = headers.get("authorization") || headers.get("Authorization");
-    if (a && /^Bearer\s+/i.test(a)) return a.replace(/^Bearer\s+/i, "").trim();
-  }
-  return null;
-}
-
-// Build a useful error string from a rooPost result: the real HTTP status if Deliveroo answered,
-// otherwise the actual network error (status 0 means the request never reached Deliveroo).
-function rooErr(label, r) {
-  const detail = r && r.status ? ("HTTP " + r.status) : "no response";
-  const t = r && r.text ? String(r.text).trim().slice(0, 200) : "";
-  return label + " (" + detail + (t ? " — " + t : "") + ")";
-}
-
-/* ─────────────────────────── voucher ─────────────────────────── */
-
-const VOUCHER_PASTEBIN = "https://pastebin.com/raw/ycf33H7N";
-
-// One-line raw paste; the code updates regularly so we read it fresh each run.
-async function fetchVoucherCode() {
-  const r = await fetch(VOUCHER_PASTEBIN, { cache: "no-store" });
-  if (!r.ok) throw new Error("pastebin " + r.status);
-  const t = await r.text();
-  return (t.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || "").trim();
-}
-
-// 1:1 with bot.py apply_voucher: Basic base64(user_id:orderapp_ios,token) + {redemption_code, page}.
-function basicAuth(userId, token) {
-  return "Basic " + btoa(`${userId}:orderapp_ios,${token}`);
-}
-async function applyVoucher(userId, token, code) {
-  const headers = Object.assign({}, rooHeaders(), { "User-Agent": IOS_UA, "Authorization": basicAuth(userId, token) });
-  const r = await proxyRequest({
-    url: `${ROO_AUTH}/users/${encodeURIComponent(userId)}/vouchers`, method: "POST", headers,
-    bodyB64: strToB64(JSON.stringify({ redemption_code: code, page: "account" })),
-  });
-  if (r.error) return { ok: false, status: 0, data: null, text: String(r.error) };
-  const text = b64ToStr(r.bodyB64);
-  let data = null; try { data = text ? JSON.parse(text) : null; } catch (_) {}
-  return { ok: r.status >= 200 && r.status < 300, status: r.status, data, text };
-}
-
-/* ─────────────────────────── SMSPool ─────────────────────────── */
-
-async function smspoolPost(endpoint, params) {
-  const resp = await fetch(`${SMSPOOL}/${endpoint}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(params).toString(),
-  });
-  const text = await resp.text().catch(() => "");
-  try { return JSON.parse(text); } catch (_) { return { success: 0, message: text || `HTTP ${resp.status}` }; }
-}
-
-/* ───────── account OTP via the paid-gated server (L2) ─────────
-   The number is rented and polled by the SERVER using the user's OWN dashboard SMSPool key
-   (resolved from their website account via the link token), so a user who isn't a paid subscriber —
-   or who hasn't added a SMSPool key on the dashboard — can't get an OTP and therefore can't
-   complete a signup. The Deliveroo signup itself still runs here in the browser, on the user's own
-   residential IP — the server never touches Deliveroo. */
-async function otpRent() {
-  const d = await extApi("/otp/rent", {});
-  if (!d || !d.ok) {
-    const reason = d && (d.reason || d.error);
-    if (reason === "no_smspool_key") throw new Error("No SMSPool key on your NexaServe account — add one on the dashboard first.");
-    if (reason === "not_subscribed" || reason === "unlinked") throw new Error("An active NexaServe subscription is required — check your account.");
-    throw new Error("SMSPool: " + ((d && (d.message || reason)) || "couldn't rent a number — check your SMSPool balance"));
-  }
-  return { phone: d.phone, orderId: d.orderId };
-}
-async function otpCheck(orderId) {
-  const d = await extApi("/otp/check", { orderId });
-  return { code: d && d.code ? d.code : null, status: d && d.status };
-}
-// Cancels the rented number (SMSPool refunds an un-received number). Returns { ok, cancelled }
-// so the caller can honestly tell the user whether the balance was refunded.
-async function otpCancel(orderId) {
-  try {
-    const d = await extApi("/otp/cancel", { orderId });
-    return d && typeof d === "object" ? d : { ok: false, cancelled: false };
-  } catch (e) { return { ok: false, cancelled: false }; }
+  return errored ? null : account;
 }
 
 /* ─────────────────── auto account creation pipeline ─────────────────── */
@@ -659,135 +413,30 @@ async function autoCreate(tabId) {
     return;
   }
 
-  const id = genIdentity();
-  id.email = await claimEmail(); // reserve a unique @nexaserve.uk email (server-side, user's account)
-  let orderId = null;
-  await enableIosUa();
+  // The whole Deliveroo signup (rent, verify, register, voucher) runs on the server and streams
+  // its progress into the overlay; we get back the finished account (or null after an error step).
+  const account = await createViaServer(tabId);
+  if (!account) return;
+
+  // The one account step that must run in the browser: log the tab into deliveroo.co.uk with the
+  // new credentials, so the session binds to the user's OWN browser/IP (a server-side login would
+  // bind it to the residential proxy and Deliveroo could drop it once the user browses normally).
+  sendStep(tabId, "weblogin", "Logging into the website…", "run");
   try {
-    // 1) rent a number (server-side, licence-gated — see otpRent)
-    sendStep(tabId, "rent", "Renting a number (SMSPool)…", "run");
-    const num = await otpRent();
-    orderId = num.orderId;
-    sendStep(tabId, "rent", `Number rented: ${num.phone}`, "ok");
-
-    // 2) seed a Cloudflare session
-    sendStep(tabId, "init", "Initialising session…", "run");
-    await rooPost(ROO_AUTH + "/session", { first_install: 1 });
-    sendStep(tabId, "init", "Session ready", "ok");
-
-    // 3) trigger the verification SMS
-    sendStep(tabId, "sms", "Requesting SMS code…", "run");
-    const sent = await rooPost(ROO_BASE + "/consumer/send_verification_code", {
-      verification_address: num.phone, verification_method: "sms", verification_trigger: "account_creation",
-    });
-    if (!sent.ok) throw new Error(rooErr("Deliveroo refused the SMS request", sent));
-    sendStep(tabId, "sms", "SMS requested", "ok");
-
-    // 4) wait for the code (1 min). If it doesn't arrive, cancel the number — SMSPool refunds an
-    //    un-received number — and surface a "try again" so the user can rent a fresh one.
-    sendStep(tabId, "wait", "Waiting for the SMS code…", "run");
-    let code = null;
-    const deadline = Date.now() + 60000; // 1 minute
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 4000));
-      const r = await otpCheck(orderId);
-      if (r.code) { code = r.code; break; }
-    }
-    if (!code) {
-      sendStep(tabId, "wait", "No SMS after 1 minute — cancelling the number…", "fail");
-      const cancel = orderId ? await otpCancel(orderId) : { cancelled: false };
-      orderId = null; // cancelled here → don't let the catch re-cancel
-      const refunded = !!(cancel && cancel.cancelled);
-      chrome.tabs.sendMessage(tabId, {
-        __rooAuto: true, kind: "error", title: "SMS didn't arrive",
-        message: refunded
-          ? "The verification SMS didn't arrive within 1 minute, so the number was cancelled and your SMSPool balance refunded. Tap “Try again” to rent a fresh number."
-          : "The verification SMS didn't arrive within 1 minute, so the number was released. Tap “Try again” to rent a fresh number.",
-      }).catch(() => {});
-      return; // finally{} still runs (disableIosUa)
-    }
-    sendStep(tabId, "wait", `Code received: ${code}`, "ok");
-
-    // 5) verify the code
-    sendStep(tabId, "verify", "Verifying code…", "run");
-    const ver = await rooPost(ROO_BASE + "/consumer/verify_code", {
-      verification_address: num.phone, verification_code: String(code), verification_method: "sms", verification_trigger: "account_creation",
-    });
-    if (!ver.ok) throw new Error(rooErr("Code verification failed", ver));
-    const secret = (ver.data && (ver.data.verification_secret || ver.data.verification_token)) || "confirmed";
-    sendStep(tabId, "verify", "Verified", "ok");
-
-    // 6) register
-    sendStep(tabId, "register", "Creating the account…", "run");
-    const regBody = {
-      email: id.email, password: id.password, first_name: id.first, last_name: id.last,
-      client_type: "orderapp_ios",
-      marketing_preferences: { marketing_sms: false, marketing_email: false, marketing_push: false },
-    };
-    if (secret && secret !== "confirmed") regBody.verification_secret = secret;
-    const reg = await rooPost(ROO_AUTH + "/users", regBody);
-    if (!reg.ok) throw new Error(rooErr("Registration failed", reg));
-    let userId = reg.data && (reg.data.id || reg.data.user_id);
-    let token = extractToken(reg.data, reg.headers);
-
-    // 7) fall back to a login if the register didn't return a token
-    if (!token) {
-      sendStep(tabId, "register", "Account made — signing in…", "run");
-      const log = await rooPost(ROO_AUTH + "/sessions", { email: id.email, password: id.password, client_type: "orderapp_ios" });
-      if (log.ok) {
-        userId = userId || (log.data && (log.data.user_id || log.data.id || log.data.customer_id));
-        token = extractToken(log.data, log.headers);
-      }
-    }
-    if (!token) throw new Error("Account created but no bearer token returned");
-    sendStep(tabId, "register", "Account created", "ok");
-
-    const account = { email: id.email, password: id.password, phone: num.phone, userId: userId || null, token };
-
-    // 8) auto-apply the current voucher (non-fatal — never fails the account)
-    sendStep(tabId, "voucher", "Applying voucher…", "run");
-    try {
-      const code = await fetchVoucherCode();
-      if (!code) throw new Error("no code in paste");
-      if (!userId) throw new Error("no user id to apply against");
-      const v = await applyVoucher(userId, token, code);
-      if (v.ok) {
-        account.voucher = code;
-        sendStep(tabId, "voucher", `Voucher applied: ${code}`, "ok");
-      } else {
-        const why = (v.data && (v.data.message || v.data.error)) || ("HTTP " + v.status);
-        sendStep(tabId, "voucher", `Voucher not applied (${why})`, "fail");
-      }
-    } catch (e) {
-      sendStep(tabId, "voucher", "Voucher skipped: " + String((e && e.message) || e), "fail");
-    }
-
-    // 9) log into the website (sets consumer_auth_token + session cookies in the jar).
-    //    Desktop (DNR): background fetch + Origin/Referer DNR rule, keeps the tab frozen.
-    //    Mobile (no DNR): run it from the page context (native headers, tab isn't frozen).
-    sendStep(tabId, "weblogin", "Logging into the website…", "run");
-    try {
-      const cat = CAP.dnrSession
-        ? await webApiLogin(id.email, id.password)
-        : await webApiLoginPage(tabId, id.email, id.password);
-      account.consumerAuthToken = cat;
-      account.webLoginOk = true;
-      // The bearer token to keep is the consumer_auth_token cookie value.
-      await setAuthHeader(cat).catch(() => {});
-      sendStep(tabId, "weblogin", "Logged in — session cookies applied", "ok");
-    } catch (e) {
-      account.webLoginOk = false;
-      sendStep(tabId, "weblogin", "Web login failed: " + String((e && e.message) || e), "fail");
-    }
-
-    await chrome.storage.local.set({ activeAccount: account });
-    chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "done", account }).catch(() => {});
-  } catch (err) {
-    if (orderId) otpCancel(orderId);
-    chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "error", message: String((err && err.message) || err) }).catch(() => {});
-  } finally {
-    await disableIosUa().catch(() => {});
+    const cat = CAP.dnrSession
+      ? await webApiLogin(account.email, account.password)
+      : await webApiLoginPage(tabId, account.email, account.password);
+    account.consumerAuthToken = cat;
+    account.webLoginOk = true;
+    await setAuthHeader(cat).catch(() => {}); // the bearer to keep is the consumer_auth_token cookie
+    sendStep(tabId, "weblogin", "Logged in — session cookies applied", "ok");
+  } catch (e) {
+    account.webLoginOk = false;
+    sendStep(tabId, "weblogin", "Web login failed: " + String((e && e.message) || e), "fail");
   }
+
+  await chrome.storage.local.set({ activeAccount: account });
+  chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "done", account }).catch(() => {});
 }
 
 /* ───────────── best-effort: log the live web UI in ───────────── */
@@ -858,11 +507,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async
   }
 
-  if (msg.type === "refreshBalance") {
-    refreshBalance().then((bal) => sendResponse({ balance: bal })).catch(() => sendResponse({ balance: null }));
-    return true;
-  }
-
   if (msg.type === "reinitDnr") { applyLicenseState(); return; } // DNR just granted on Chrome → re-apply gated state
 
   if (msg.__rooClear && sender.tab && typeof sender.tab.id === "number") {
@@ -881,52 +525,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => { unfreezeTab(tabId).catch(() => {}); });
-
-/* ─────────────── SMSPool balance: badge + 1-minute refresh ─────────────── */
-
-function setBadge(bal) {
-  if (!chrome.action) return;
-  let t = bal == null || bal === "" ? "" : String(bal);
-  if (t.length > 4 && t.indexOf(".") !== -1) t = t.split(".")[0]; // keep it short on the icon
-  try { chrome.action.setBadgeText && chrome.action.setBadgeText({ text: t }); } catch (e) {}
-  try { chrome.action.setBadgeBackgroundColor && chrome.action.setBadgeBackgroundColor({ color: "#8600ff" }); } catch (e) {}
-  try { chrome.action.setTitle && chrome.action.setTitle({ title: bal != null && bal !== "" ? `SMSPool balance: $${bal}` : "Deliveroo tools" }); } catch (e) {}
-}
-
-async function fetchBalance(key) {
-  const fd = new FormData();
-  fd.append("key", key);
-  const r = await fetch(SMSPOOL + "/request/balance", { method: "POST", body: fd });
-  let data = {};
-  try { data = await r.json(); } catch (_) {}
-  if (r.status === 200 && data && Object.prototype.hasOwnProperty.call(data, "balance")) {
-    return data.balance === "" || data.balance == null ? null : data.balance;
-  }
-  throw new Error("balance check failed (" + r.status + ")");
-}
-
-// Refresh the stored balance + badge if we have a verified key. Returns the balance.
-async function refreshBalance() {
-  const d = await chrome.storage.local.get(["smspoolKey", "smspoolValid"]);
-  if (!d.smspoolKey || !d.smspoolValid) { setBadge(""); return null; }
-  try {
-    const bal = await fetchBalance(d.smspoolKey);
-    await chrome.storage.local.set({ smspoolBalance: bal });
-    setBadge(bal);
-    return bal;
-  } catch (_) {
-    return null; // keep last-known balance/badge on a transient failure
-  }
-}
-
-function ensureBalanceAlarm() {
-  if (CAP.alarms) chrome.alarms.create("smspoolBalance", { periodInMinutes: 1 });
-}
-
-if (CAP.alarms) chrome.alarms.onAlarm.addListener((a) => { if (a.name === "smspoolBalance") refreshBalance(); });
-chrome.runtime.onInstalled.addListener(() => { ensureBalanceAlarm(); refreshBalance(); });
-chrome.runtime.onStartup.addListener(() => { ensureBalanceAlarm(); refreshBalance(); });
-ensureBalanceAlarm(); // also when the worker first spins up
 
 // React to link changes: the site content script or the popup paste box writing extToken/extPaid
 // flips the gate (linked → active, unlinked → inert) live, without a reload.

@@ -19,17 +19,13 @@
   "host_permissions": [
     "https://*.deliveroo.co.uk/*",
     "https://*.deliveroo.com/*",
-    "https://api.smspool.net/*",
-    "https://pastebin.com/*",
-    "https://deliveroo.nexaserve.uk/*",
-    "https://roo-ext-production.up.railway.app/*",
     "https://roo-proxy.nexaserve.uk/*",
     "https://roo-proxy-server-production.up.railway.app/*",
     "https://dashboard.nexaserve.uk/*"
   ],
   "web_accessible_resources": [
     {
-      "resources": ["logo.png", "popup.html", "config.js", "crypto.js", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
+      "resources": ["logo.png", "popup.html", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
       "matches": ["https://*.deliveroo.co.uk/*", "https://*.deliveroo.com/*"]
     }
   ],
