@@ -170,43 +170,23 @@
     </style>
   </head>
   <body>
-    <!-- LOCK SCREEN -->
+    <!-- LOCK SCREEN (not linked) -->
     <div class="wrap hidden" id="lockScreen">
       <img class="lock-logo" src="logo.png" alt="NEXA" />
       <h1>Deliveroo Reset</h1>
-      <p class="lsub">Enter your access key to unlock. Made by TFX.</p>
-      <input id="licenseKey" type="text" placeholder="NEXA-DROO-EXT-XXXXX-XXXXX" autocomplete="off" spellcheck="false" />
-      <button id="unlock" type="button">Unlock</button>
+      <p class="lsub">Sign in at <b>dashboard.nexaserve.uk</b> and this unlocks automatically. Or paste your link token below. Made by TFX.</p>
+      <input id="linkToken" type="text" placeholder="Paste your link token" autocomplete="off" spellcheck="false" />
+      <button id="unlock" type="button">Link account</button>
       <p id="lockStatus" class="muted"></p>
-      <div id="deviceList" class="hidden"></div>
     </div>
 
-    <!-- MAIN (shown once unlocked) -->
+    <!-- MAIN (shown once linked) -->
     <div class="wrap hidden" id="mainScreen">
       <p class="brand">Deliveroo Reset · TFX</p>
       <p class="title">Clear Deliveroo data</p>
       <p class="sub">Wipes all cookies &amp; site storage for deliveroo.co.uk / deliveroo.com, then freezes the tab and asks whether to make a new account or close it.</p>
       <button id="clear">Clear data</button>
       <p id="result" class="muted"></p>
-
-      <div id="ipWarn" class="ipwarn hidden">
-        <p class="ipwarn-t">⚠ This IP has been used before. It's highly recommended to switch IP before continuing.</p>
-        <div class="ipwarn-btns">
-          <button id="ipWarnReset" type="button" class="ipw-reset">Reset IP</button>
-          <button id="ipWarnContinue" type="button" class="ipw-cont">Continue anyway</button>
-        </div>
-      </div>
-
-      <hr />
-
-      <label class="fieldlabel" for="smspoolKey">SMSPool API key</label>
-      <div class="keyrow">
-        <input id="smspoolKey" type="password" placeholder="Paste your SMSPool API key" autocomplete="off" spellcheck="false" />
-        <button id="keyToggle" type="button" title="Show / hide">Show</button>
-      </div>
-      <button id="keySubmit" type="button">Submit key</button>
-      <p id="keyStatus" class="muted"></p>
-      <p class="note">Used by <b>Auto</b> account creation to rent a number (service <code>258</code>, country <code>1</code>) and read the SMS. Saved on this device until you change it.</p>
 
       <hr />
 
@@ -215,11 +195,11 @@
         <span id="ipValue" class="ipval">checking…</span>
         <button id="resetIp" type="button">Reset IP</button>
       </div>
-      <p id="ipStatus" class="note"></p>
+      <p id="ipStatus" class="note">Use a fresh IP per account for the best success rate.</p>
 
       <div class="licbar">
         <span id="licInfo"></span>
-        <button id="unlinkBtn" type="button" title="Free this device's slot and sign out">Unlink device</button>
+        <button id="signOut" type="button" title="Unlink this browser from your NexaServe account">Unlink</button>
       </div>
     </div>
 
@@ -256,8 +236,6 @@
       <button id="ipResetCancel" type="button" class="ghostbtn">Cancel</button>
     </div>
 
-    <script src="config.js"></script>
-    <script src="crypto.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

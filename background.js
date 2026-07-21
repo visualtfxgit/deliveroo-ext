@@ -8,13 +8,13 @@
 // NexaCrypto exists before any key-API call signs a request.
 try { importScripts("crypto.js"); } catch (e) { /* crypto.js absent → signing degrades to off */ }
 
-// License gate: the extension is locked until a valid NEXA-DROO key is redeemed
-// (see popup). Everything user-facing starts from the clearData message, so gating it
-// here covers the whole flow.
+// Gate: the extension is inert until it's linked to a NexaServe account (a website
+// extension-link token). Paid enforcement is authoritative on the proxy server (every
+// /proxy + /otp call is gated on the account being a paid subscriber); locally we treat
+// "has a link token" as active — a linked-but-unpaid user's calls just get denied server-side.
 async function isLicensed() {
-  const d = await chrome.storage.local.get("license");
-  const l = d && d.license;
-  return !!(l && l.expiry && Date.now() < new Date(l.expiry).getTime());
+  const d = await chrome.storage.local.get("extToken");
+  return !!(d && d.extToken);
 }
 
 const COOKIE_DOMAINS = ["deliveroo.com", "deliveroo.co.uk"];
@@ -208,39 +208,19 @@ function removeHeaderRules() {
   return chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: HEADER_RULE_IDS, addRules: [] }).catch(() => {});
 }
 
-/* ───────── dynamic license gate ─────────
-   The whole extension stays INERT (no header spoofing) until a valid,
-   redeemed, non-expired licence is present — and turns itself OFF automatically when the key
-   expires/revokes. evalLicense() = local expiry check (isLicensed) first (the definitive expiry
-   signal), confirmed against the server (catches revocation; trusts local if offline). The state
-   is cached, the DNR rules toggled, and the live state pushed to inject.js (which won't intercept
-   anything while off). Re-evaluated on startup, on a 2-min alarm (→ auto-off at expiry), and
-   whenever the stored licence changes (redeem/clear → instant on/off). */
-let _licOk = false, _licSrvAt = 0, _licSrvVal = false;
+/* ───────── dynamic gate ─────────
+   The whole extension stays INERT (no header spoofing) until it's linked to a NexaServe account.
+   "Linked" = a website extension-link token is present (grabbed on the dashboard or pasted).
+   Paid/subscription enforcement is authoritative on the proxy server, checked live on every
+   /proxy + /otp call — so we don't re-check it here; we just reflect "linked" into the DNR rules +
+   the on-page banner. Re-evaluated on startup, on the alarm, and whenever the token changes. */
+let _licOk = false;
 async function evalLicense() {
-  if (!(await isLicensed())) return false; // no key, or expired → definitively off (checked every call → snappy expiry)
-  const now = Date.now();
-  if (now - _licSrvAt < 60000) return _licSrvVal; // throttle the server revoke-check to once/min
-  let ok = true;
-  try {
-    const d = await chrome.storage.local.get(["license", "deviceId"]);
-    const r = await keyApiFetch("/api/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: d.license.key, device_id: d.deviceId }) });
-    const j = await r.json().catch(() => null);
-    if (j) { // version gate: store whether THIS device is up-to-date + the required version
-      const outdated = (typeof j.version_ok === "boolean") ? !j.version_ok : false;
-      try { await chrome.storage.local.set({ __outdated: outdated, __requiredVersion: j.required_version || "" }); } catch (e) {}
-    }
-    if (j && typeof j.valid === "boolean") ok = !!(j.valid && j.redeemed); // server truth (catches revoke)
-    else ok = true; // unexpected response but local says valid → trust local
-  } catch (e) { ok = true; } // offline → trust the local expiry check
-  _licSrvAt = now; _licSrvVal = ok;
-  return ok;
+  return await isLicensed(); // linked ⇢ active; server enforces paid on each call
 }
 async function applyLicenseState() {
-  let lic = false;
-  try { lic = await evalLicense(); } catch (e) { lic = false; }
-  const st = await chrome.storage.local.get("__outdated").catch(() => ({}));
-  const ok = lic && !(st && st.__outdated); // wrong extension version → fully inert until updated
+  let ok = false;
+  try { ok = await evalLicense(); } catch (e) { ok = false; }
   _licOk = ok;
   try { await chrome.storage.local.set({ __licOk: ok }); } catch (e) {}
   if (ok) await ensureHeaderRules(); else await removeHeaderRules();
@@ -249,7 +229,7 @@ async function applyLicenseState() {
 }
 function broadcastLicensed(ok) {
   // Query ALL tabs (only needs tab.id → no "tabs" permission); non-Deliveroo tabs have no listener
-  // and ignore it. Lets an already-open page flip on/off live (redeem / expiry) without a reload.
+  // and ignore it. Lets an already-open page flip on/off live (link / unlink) without a reload.
   try {
     chrome.tabs.query({}, (tabs) => {
       if (chrome.runtime.lastError) return;
@@ -426,60 +406,40 @@ function genIdentity() {
   return { first, last, email: genEmail(), password };
 }
 
-// Key API bases (same as the popup's config) — used to reserve a unique email.
-const KEY_API_BASES = ["https://deliveroo.nexaserve.uk", "https://roo-ext-production.up.railway.app"];
-// App key for the `x-app-key` header — base64("<appKey>|<ip>"); must match config.js
-// NEXA_APP_KEY + server APP_KEY. __rooBgIp is refreshed from the server's ip_mismatch reply.
-const NEXA_APP_KEY = "NEXA-DROO-APP-7kyM77W-_01UYy42NUpJZ5cS";
-let __rooBgIp = "";
-function appKeyHeader() {
-  return (typeof btoa === "function") ? btoa(NEXA_APP_KEY + "|" + (__rooBgIp || "")) : "";
-}
-// Per-device signature headers (L1) for a key-API call. Harmless when the server isn't enforcing
-// (REQUIRE_SIG off); required once it is. Empty object if NexaCrypto/WebCrypto is unavailable.
-async function signHeaders(method, path, bodyStr) {
-  try {
-    if (!self.NexaCrypto || !self.NexaCrypto.available) return {};
-    const d = await chrome.storage.local.get("deviceId");
-    const s = await self.NexaCrypto.signRequest(method || "GET", path, bodyStr || "");
-    return { "x-roo-ts": s.ts, "x-roo-nonce": s.nonce, "x-roo-sig": s.sig, "x-roo-device": (d && d.deviceId) || "" };
-  } catch (e) { return {}; }
-}
 const EXT_VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return ""; } })();
-async function keyApiFetch(path, opts) {
-  opts = opts || {};
-  let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const h = appKeyHeader();
-    const sig = await signHeaders(opts.method || "GET", path, typeof opts.body === "string" ? opts.body : "");
-    const o = Object.assign({}, opts, { headers: Object.assign({}, opts.headers, sig, { "x-roo-version": EXT_VERSION }, h ? { "x-app-key": h } : {}) });
-    let retry = false;
-    for (const base of KEY_API_BASES) {
-      try {
-        const res = await fetch(base + path, o);
-        if (res.status === 403 && attempt === 0) {
-          const d = await res.clone().json().catch(() => ({}));
-          if (d && d.error === "ip_mismatch" && d.ip) { __rooBgIp = d.ip; retry = true; break; }
-        }
-        return res;
-      } catch (e) { lastErr = e; }
-    }
-    if (!retry) break;
+
+// Call the proxy server's licence-gated helper endpoints (/otp/*, /email/claim) with our website
+// link token so the server can resolve the account, confirm it's paid, and use the user's OWN
+// dashboard SMSPool key. Falls back to the next base only when a base is unreachable.
+async function extApi(path, body) {
+  const st = await chrome.storage.local.get("extToken");
+  const payload = Object.assign({ token: (st && st.extToken) || "" }, body || {});
+  let lastErr = "unreachable";
+  for (const base of PROXY_SERVERS) {
+    try {
+      const res = await fetch(base + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await res.json().catch(() => null);
+      if (d) return d;              // server answered (incl. {reason} on 403) — authoritative
+      lastErr = "http_" + res.status;
+    } catch (e) { lastErr = String((e && e.message) || e); }
   }
-  throw lastErr || new Error("key API unreachable");
+  return { error: lastErr };
 }
-// Reserve a fresh email with the API so it's never reused by anyone (across users/devices).
-// Retries on conflict; if the API is unreachable, falls back to the random email (a
-// collision among random 12–14 char locals is astronomically unlikely).
+
+// Reserve a fresh email with the server so it's never reused across users. Retries on conflict;
+// if the server is unreachable, falls back to the random email (a collision among random 12–14
+// char locals is astronomically unlikely).
 async function claimEmail() {
   for (let i = 0; i < 6; i++) {
     const email = genEmail();
-    try {
-      const r = await keyApiFetch("/api/email/claim", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
-      if (r.ok) return email;             // claimed (200)
-      if (r.status !== 409) return email; // unexpected error — use it anyway
-      // 409 taken → generate another
-    } catch (e) { return email; }         // API down — use the random email
+    const r = await extApi("/email/claim", { email });
+    if (r && r.ok) return email;                 // reserved
+    if (r && r.reason === "taken") continue;      // collision → try another
+    return email;                                 // any other error (incl. unreachable) → use it anyway
   }
   return genEmail();
 }
@@ -525,27 +485,26 @@ async function rooApplySetCookies(setCookies, url) {
     } catch (e) {}
   }
 }
-// POST the request to the forwarder (with the caller's licence key/device so the server can gate
-// it). Falls back to the next base only when a base is unreachable — a server-returned error
-// (license_invalid / proxy_fetch_failed) is authoritative and passed straight back.
+// POST the request to the forwarder with the caller's website extension-link token, so the server
+// can gate it on the user's website subscription. Falls back to the next base only when a base is
+// unreachable — a server-returned error (not_subscribed / proxy_fetch_failed) is authoritative and
+// passed straight back.
 async function proxyRequest(reqObj) {
   if (!reqObj || !reqObj.url) return { error: "bad_payload" };
   const headers = Object.assign({}, reqObj.headers || {});
   const cookie = await rooBuildCookieHeader(reqObj.url);
   if (cookie) headers["Cookie"] = cookie;
-  const lic = await chrome.storage.local.get(["license", "deviceId"]);
+  const st = await chrome.storage.local.get("extToken");
   const payload = {
-    key: (lic.license && lic.license.key) || "",
-    device_id: lic.deviceId || "",
+    token: (st && st.extToken) || "",
     req: { url: reqObj.url, method: reqObj.method || "GET", headers, bodyB64: reqObj.bodyB64 || null },
   };
-  const h = appKeyHeader();
   let lastErr = "proxy_unreachable";
   for (const base of PROXY_SERVERS) {
     try {
       const res = await fetch(base + "/proxy", {
         method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json" }, h ? { "x-app-key": h } : {}),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => null);
@@ -650,39 +609,32 @@ async function smspoolPost(endpoint, params) {
   try { return JSON.parse(text); } catch (_) { return { success: 0, message: text || `HTTP ${resp.status}` }; }
 }
 
-/* ───────── account OTP via the licence-gated server proxy (L2) ─────────
-   The number is rented and polled by the SERVER using the licence's stored SMSPool key, so a
-   client without a valid licence can't get an OTP and therefore can't complete a signup. The
-   Deliveroo signup itself still runs here in the browser, on the user's own residential IP — the
-   server never touches Deliveroo. buildPhone now lives server-side. */
-async function getLicenseKey() {
-  const d = await chrome.storage.local.get("license");
-  return (d && d.license && d.license.key) || "";
-}
+/* ───────── account OTP via the paid-gated server (L2) ─────────
+   The number is rented and polled by the SERVER using the user's OWN dashboard SMSPool key
+   (resolved from their website account via the link token), so a user who isn't a paid subscriber —
+   or who hasn't added a SMSPool key on the dashboard — can't get an OTP and therefore can't
+   complete a signup. The Deliveroo signup itself still runs here in the browser, on the user's own
+   residential IP — the server never touches Deliveroo. */
 async function otpRent() {
-  const key = await getLicenseKey();
-  if (!key) throw new Error("No licence — open the popup and redeem your key.");
-  const r = await keyApiFetch("/api/account/otp/rent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok || !d.ok) {
-    if (d && d.reason === "no_smspool_key") throw new Error("No SMSPool key on your licence — set it in the popup first.");
-    throw new Error("SMSPool: " + ((d && (d.message || d.reason)) || ("couldn't rent a number — check your SMSPool key / balance")));
+  const d = await extApi("/otp/rent", {});
+  if (!d || !d.ok) {
+    const reason = d && (d.reason || d.error);
+    if (reason === "no_smspool_key") throw new Error("No SMSPool key on your NexaServe account — add one on the dashboard first.");
+    if (reason === "not_subscribed" || reason === "unlinked") throw new Error("An active NexaServe subscription is required — check your account.");
+    throw new Error("SMSPool: " + ((d && (d.message || reason)) || "couldn't rent a number — check your SMSPool balance"));
   }
   return { phone: d.phone, orderId: d.orderId };
 }
 async function otpCheck(orderId) {
-  const key = await getLicenseKey();
-  const r = await keyApiFetch("/api/account/otp/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, orderId }) });
-  const d = await r.json().catch(() => ({}));
+  const d = await extApi("/otp/check", { orderId });
   return { code: d && d.code ? d.code : null, status: d && d.status };
 }
 // Cancels the rented number (SMSPool refunds an un-received number). Returns { ok, cancelled }
 // so the caller can honestly tell the user whether the balance was refunded.
 async function otpCancel(orderId) {
   try {
-    const key = await getLicenseKey();
-    const r = await keyApiFetch("/api/account/otp/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, orderId }) });
-    return await r.json().catch(() => ({ ok: false, cancelled: false }));
+    const d = await extApi("/otp/cancel", { orderId });
+    return d && typeof d === "object" ? d : { ok: false, cancelled: false };
   } catch (e) { return { ok: false, cancelled: false }; }
 }
 
@@ -693,15 +645,13 @@ function sendStep(tabId, key, text, state) {
 }
 
 async function autoCreate(tabId) {
-  const cfg = await chrome.storage.local.get(["smspoolKey", "smspoolValid"]);
-  const key = cfg && cfg.smspoolKey;
-  if (!key || !cfg.smspoolValid) {
-    chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "error", message: "SMSPool key not verified — open the extension popup, enter your key and click Submit." }).catch(() => {});
+  if (!(await isLicensed())) {
+    chrome.tabs.sendMessage(tabId, { __rooAuto: true, kind: "error", message: "Link your NexaServe account first — sign in at dashboard.nexaserve.uk (or paste your link token in the popup)." }).catch(() => {});
     return;
   }
 
   const id = genIdentity();
-  id.email = await claimEmail(); // reserve a unique @nexaserve.uk email via the API
+  id.email = await claimEmail(); // reserve a unique @nexaserve.uk email (server-side, user's account)
   let orderId = null;
   await enableIosUa();
   try {
@@ -873,20 +823,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "extLink") { // sitelink.js grabbed the website link token + live paid status
+    (async () => {
+      try {
+        const patch = { extToken: msg.token, extAt: Date.now() };
+        if (typeof msg.paid === "boolean") patch.extPaid = msg.paid;
+        if (typeof msg.plan === "string") patch.extPlan = msg.plan;
+        await chrome.storage.local.set(patch);
+      } catch (e) {}
+    })();
+    return;
+  }
+
   if (msg.type === "rooKeyActivated") { // popup unlocked a key (any key) → run the activation sequence
     applyLicenseState(); runActivationOnDeliverooTab();
     return;
   }
 
-  if (msg.type === "rooLicenseConfig") { // page asks for licence + version state
+  if (msg.type === "rooLicenseConfig") { // page asks whether the extension is linked (active)
     (async () => {
-      const st = await chrome.storage.local.get(["__licOk", "__outdated", "__requiredVersion"]);
-      sendResponse({
-        licensed: !!(st && st.__licOk),
-        outdated: !!(st && st.__outdated),
-        required: (st && st.__requiredVersion) || "",
-        current: EXT_VERSION,
-      });
+      const st = await chrome.storage.local.get("__licOk");
+      sendResponse({ licensed: !!(st && st.__licOk), outdated: false, required: "", current: EXT_VERSION });
     })();
     applyLicenseState(); // also kick a fresh check (broadcasts if it changed)
     return true; // async
@@ -962,14 +919,9 @@ chrome.runtime.onInstalled.addListener(() => { ensureBalanceAlarm(); refreshBala
 chrome.runtime.onStartup.addListener(() => { ensureBalanceAlarm(); refreshBalance(); });
 ensureBalanceAlarm(); // also when the worker first spins up
 
-// React to popup edits: re-check when a key is verified; clear the badge if invalidated.
+// React to link changes: the site content script or the popup paste box writing extToken/extPaid
+// flips the gate (linked → active, unlinked → inert) live, without a reload.
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== "local") return;
-  if (ch.license) applyLicenseState(); // redeem / clear / expiry → flip the gate (activation sequence is triggered explicitly by the popup's rooKeyActivated)
-  if (ch.smspoolValid) {
-    if (ch.smspoolValid.newValue) refreshBalance();
-    else setBadge("");
-  } else if (ch.smspoolBalance && ch.smspoolBalance.newValue != null) {
-    setBadge(ch.smspoolBalance.newValue);
-  }
+  if (ch.extToken || ch.extPaid) applyLicenseState();
 });

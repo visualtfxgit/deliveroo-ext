@@ -24,7 +24,8 @@
     "https://deliveroo.nexaserve.uk/*",
     "https://roo-ext-production.up.railway.app/*",
     "https://roo-proxy.nexaserve.uk/*",
-    "https://roo-proxy-server-production.up.railway.app/*"
+    "https://roo-proxy-server-production.up.railway.app/*",
+    "https://dashboard.nexaserve.uk/*"
   ],
   "web_accessible_resources": [
     {
@@ -37,6 +38,12 @@
       "matches": ["https://*.deliveroo.co.uk/*", "https://*.deliveroo.com/*"],
       "js": ["content.js"],
       "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://dashboard.nexaserve.uk/*"],
+      "js": ["sitelink.js"],
+      "run_at": "document_idle",
       "all_frames": false
     }
   ],

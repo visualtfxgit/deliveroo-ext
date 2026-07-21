@@ -127,21 +127,22 @@
       man.onclick = function () { send("newAccountManual"); };
       row.appendChild(auto); row.appendChild(man);
       card.appendChild(row);
-      var hint = el("p", "sub", "Checking SMSPool key…");
+      var hint = el("p", "sub", "Checking your account…");
       hint.style.marginTop = "10px"; hint.style.fontSize = "11.5px";
       card.appendChild(hint);
       try {
-        chrome.storage.local.get(["smspoolValid", "smspoolBalance"], function (d) {
-          if (d && d.smspoolValid) {
+        chrome.storage.local.get(["extToken", "extPaid"], function (d) {
+          if (d && d.extToken) {
             auto.disabled = false;
-            hint.textContent = (d.smspoolBalance != null && d.smspoolBalance !== "")
-              ? ("SMSPool ready · balance $" + d.smspoolBalance) : "SMSPool key verified.";
+            hint.textContent = d.extPaid === false
+              ? "Linked, but no active subscription — creation may be blocked."
+              : "Ready — uses your NexaServe account's SMSPool key.";
           } else {
             auto.disabled = true;
-            hint.textContent = "Auto needs a valid SMSPool key — set & submit it in the extension popup.";
+            hint.textContent = "Link your NexaServe account first — sign in at dashboard.nexaserve.uk.";
           }
         });
-      } catch (e) { auto.disabled = true; hint.textContent = "Auto needs a valid SMSPool key (set it in the popup)."; }
+      } catch (e) { auto.disabled = true; hint.textContent = "Link your NexaServe account first (sign in at dashboard.nexaserve.uk)."; }
       var back = el("button", "__rc-back", "← Back");
       back.onclick = screenMain;
       card.appendChild(back);
