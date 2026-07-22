@@ -1,11 +1,11 @@
-/* NexaServe accent theme for deliveroo.co.uk. Two layers, both loaded from the extension origin
+/* NexaServe accent theme for the target site. Two layers, both loaded from the extension origin
    and run in page context:
-   (1) TOKEN override — remaps Deliveroo's --color-* brand/action/accent design tokens to violet
+   (1) TOKEN override — remaps the site's --color-* brand/action/accent design tokens to violet
        (durable; token names are stable). Applied via inline setProperty (CSP-proof).
    (2) LITERAL teal->violet sheet — some component-library buttons/icons are painted with a literal
        teal (#00ccbc/#00b8a9) that no token can reach; this restyles those exact selectors. Applied
        via a constructable stylesheet (adoptedStyleSheets — CSP-proof, no <style> element).
-       NB: those selectors are hashed per component-library VERSION (currently 36.0.0); if Deliveroo
+       NB: those selectors are hashed per component-library VERSION (currently 36.0.0); if the site
        bumps the version the hashes change and this layer goes inert (harmless) — the token layer
        still covers the migrated-to-token components. */
 (function () {

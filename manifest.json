@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Deliveroo Reset - TFX (EXTREME)",
-  "version": "2.18",
-  "description": "MADE BY TFX — EXTREME",
+  "name": "Session Cleaner",
+  "version": "2.19",
+  "description": "Clear cookies, site data and cache for the current site.",
   "icons": {
     "16": "icon16.png",
     "32": "icon32.png",
@@ -17,27 +17,23 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://*.deliveroo.co.uk/*",
-    "https://*.deliveroo.com/*",
-    "https://roo-proxy.nexaserve.uk/*",
-    "https://roo-proxy-server-production.up.railway.app/*",
-    "https://dashboard.nexaserve.uk/*"
+    "<all_urls>"
   ],
   "web_accessible_resources": [
     {
-      "resources": ["logo.png", "nexaserve-logo.png", "applepay-sdk.js", "applepay-button.svg", "deliveroo-theme.js", "popup.html", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
-      "matches": ["https://*.deliveroo.co.uk/*", "https://*.deliveroo.com/*"]
+      "resources": ["logo.png", "nexaserve-logo.png", "applepay-sdk.js", "applepay-button.svg", "theme.js", "popup.html", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
+      "matches": ["<all_urls>"]
     }
   ],
   "content_scripts": [
     {
-      "matches": ["https://*.deliveroo.co.uk/*", "https://*.deliveroo.com/*"],
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_start",
       "all_frames": false
     },
     {
-      "matches": ["https://dashboard.nexaserve.uk/*"],
+      "matches": ["<all_urls>"],
       "js": ["sitelink.js"],
       "run_at": "document_idle",
       "all_frames": false
@@ -48,7 +44,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Deliveroo Reset - TFX",
+    "default_title": "Session Cleaner",
     "default_icon": {
       "16": "icon16.png",
       "32": "icon32.png",
