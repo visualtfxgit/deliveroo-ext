@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Deliveroo Reset - TFX (EXTREME)",
-  "version": "2.17",
+  "version": "2.18",
   "description": "MADE BY TFX — EXTREME",
   "icons": {
     "16": "icon16.png",
@@ -25,7 +25,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["logo.png", "nexaserve-logo.png", "nexaserve-banner.png", "applepay-sdk.js", "applepay-button.svg", "deliveroo-theme.js", "popup.html", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
+      "resources": ["logo.png", "nexaserve-logo.png", "applepay-sdk.js", "applepay-button.svg", "deliveroo-theme.js", "popup.html", "popup.js", "icon16.png", "icon32.png", "icon48.png", "icon128.png"],
       "matches": ["https://*.deliveroo.co.uk/*", "https://*.deliveroo.com/*"]
     }
   ],
