@@ -84,6 +84,8 @@
       /* license footer */
       .licbar { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 10.5px; color: var(--muted); }
       .licbar b { color: var(--ok); }
+      .pfoot { text-align: center; font-size: 10px; letter-spacing: .5px; color: var(--muted); opacity: .75; margin: 14px 0 2px; }
+      .pfoot b { color: var(--violet-bright); }
       #signOut { font-size: 10.5px; color: var(--muted); background: none; border: none; cursor: pointer; text-decoration: underline; padding: 0; }
       #signOut:hover { color: var(--violet-bright); }
 
@@ -173,16 +175,17 @@
     <!-- LOCK SCREEN (not linked) -->
     <div class="wrap hidden" id="lockScreen">
       <img class="lock-logo" src="logo.png" alt="NEXA" />
-      <h1>Session Cleaner</h1>
-      <p class="lsub">Sign in at <b>dashboard.nexaserve.uk</b> and this unlocks automatically. Or paste your link token below. Made by TFX.</p>
+      <h1>Roo Web Resetter - TFX</h1>
+      <p class="lsub">Sign in at <b>dashboard.nexaserve.uk</b> and this unlocks automatically. Or paste your link token below.</p>
       <input id="linkToken" type="text" placeholder="Paste your link token" autocomplete="off" spellcheck="false" />
       <button id="unlock" type="button">Link account</button>
       <p id="lockStatus" class="muted"></p>
+      <p class="pfoot">made by tfx &lt;3</p>
     </div>
 
     <!-- MAIN (shown once linked) -->
     <div class="wrap hidden" id="mainScreen">
-      <p class="brand">Session Cleaner</p>
+      <p class="brand">Roo Web Resetter · TFX</p>
       <p class="title">Create a new account</p>
       <p class="sub">Wipes your session, closes other tabs and starts fresh. If your IP hasn't changed since your last account, it'll recommend switching your VPN first.</p>
       <button id="clear">Create New Account</button>
@@ -201,6 +204,7 @@
         <span id="licInfo"></span>
         <button id="signOut" type="button" title="Unlink this browser from your NexaServe account">Unlink</button>
       </div>
+      <p class="pfoot">made by tfx &lt;3</p>
     </div>
 
     <!-- RESET IP (shown while waiting for the IP to change) -->
