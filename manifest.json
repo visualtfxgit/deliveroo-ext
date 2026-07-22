@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Session Cleaner",
-  "version": "2.19",
+  "name": "Roo Web Resetter - TFX",
+  "version": "2.20",
   "description": "Clear cookies, site data and cache for the current site.",
   "icons": {
     "16": "icon16.png",
@@ -44,7 +44,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Session Cleaner",
+    "default_title": "Roo Web Resetter - TFX",
     "default_icon": {
       "16": "icon16.png",
       "32": "icon32.png",
