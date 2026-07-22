@@ -50,33 +50,8 @@
       #result.muted { color: var(--muted); }
 
       label.fieldlabel { display: block; font-size: 12px; font-weight: 700; margin: 0 0 6px; color: #fff; }
-      .keyrow { display: flex; gap: 8px; align-items: center; }
       input { color-scheme: dark; }
-      #smspoolKey {
-        flex: 1; padding: 9px 10px; font-size: 12px;
-        background: var(--field-bg); color: var(--text);
-        border: 1px solid var(--field-border); border-radius: 8px; outline: none;
-        font-family: "SFMono-Regular", Consolas, Menlo, monospace;
-      }
-      #smspoolKey::placeholder, #licenseKey::placeholder { color: rgba(180, 163, 214, 0.6); }
-      #smspoolKey:focus { border-color: var(--violet-bright); }
-      #keyToggle {
-        padding: 8px 9px; font-size: 11px; font-weight: 600; cursor: pointer;
-        border: 1px solid var(--field-border); border-radius: 8px;
-        background: rgba(255, 255, 255, 0.08); color: var(--text);
-      }
-      #keyToggle:hover { background: rgba(255, 255, 255, 0.16); }
-      #keySubmit {
-        width: 100%; margin-top: 8px; padding: 9px 12px; font-size: 12px; font-weight: 700;
-        color: #fff; background: linear-gradient(180deg, var(--violet-bright) 0%, var(--violet) 100%);
-        border: 1px solid rgba(180, 120, 255, 0.6); border-radius: 8px; cursor: pointer;
-      }
-      #keySubmit:hover { background: linear-gradient(180deg, #c08cff 0%, #9620ff 100%); }
-      #keySubmit:disabled { opacity: 0.5; cursor: default; }
-      #keyStatus { margin: 8px 0 0; font-size: 11px; min-height: 14px; }
-      #keyStatus.saved { color: var(--ok); font-weight: 600; }
-      #keyStatus.err { color: var(--err); font-weight: 600; }
-      #keyStatus.muted { color: var(--muted); }
+      #linkToken::placeholder { color: rgba(180, 163, 214, 0.6); }
       .note { font-size: 11px; color: var(--muted); line-height: 1.45; margin: 10px 0 0; }
       .note b { color: #d9c9ff; }
       .note code { background: rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 0 4px; font-size: 10px; color: #e7d9ff; }
@@ -94,13 +69,13 @@
       #lockScreen .lock-logo { width: 76px; height: 76px; display: block; margin: 6px auto 12px; filter: drop-shadow(0 4px 14px rgba(134, 0, 255, 0.5)); }
       #lockScreen h1 { font-size: 16px; font-weight: 800; margin: 0 0 4px; color: #fff; }
       #lockScreen p.lsub { font-size: 11.5px; color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
-      #licenseKey {
-        width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 12.5px; text-align: center;
-        letter-spacing: .5px; background: var(--field-bg); color: var(--text);
+      #linkToken {
+        width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 12.5px;
+        background: var(--field-bg); color: var(--text);
         border: 1px solid var(--field-border); border-radius: 10px; outline: none;
-        font-family: "SFMono-Regular", Consolas, Menlo, monospace; text-transform: uppercase;
+        font-family: "SFMono-Regular", Consolas, Menlo, monospace;
       }
-      #licenseKey:focus { border-color: var(--violet-bright); }
+      #linkToken:focus { border-color: var(--violet-bright); }
       #unlock {
         width: 100%; margin-top: 10px; padding: 12px 14px; font-size: 14px; font-weight: 800;
         color: #fff; background: linear-gradient(180deg, var(--violet-bright) 0%, var(--violet) 100%);
